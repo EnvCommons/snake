@@ -87,10 +87,29 @@ class SnakeEnvironment(Environment):
         if isinstance(observation, list):
             if not observation:
                 return ""
-            last = observation[-1]
-            if isinstance(last, tuple) and len(last) >= 2:
-                return str(last[1])
-            return str(last)
+            # Mirror the string branch above, which strips accumulated
+            # player-action history but preserves [GAME]-authored content
+            # (rules block + board) via its (?!GAME\]) lookahead. TextArena
+            # tags GAME messages with sender id -1 (rendered "[GAME]") and
+            # player actions with the player's id. Keep everything AFTER the
+            # last player-action entry; if there is no player action yet (e.g.
+            # at reset the queue is just [PROMPT, GAME_BOARD]) keep the whole
+            # queue, so the turn-0 rules block survives alongside the board
+            # instead of being discarded by "last entry only".
+            GAME_SENDER_ID = -1
+
+            def _sender(entry):
+                return entry[0] if isinstance(entry, tuple) and len(entry) >= 2 else None
+
+            def _msg(entry):
+                return str(entry[1]) if isinstance(entry, tuple) and len(entry) >= 2 else str(entry)
+
+            last_player_idx = None
+            for i, entry in enumerate(observation):
+                if _sender(entry) != GAME_SENDER_ID:
+                    last_player_idx = i
+            kept = observation[last_player_idx + 1:] if last_player_idx is not None else observation
+            return "\n\n".join(_msg(e) for e in kept)
         return str(observation)
 
     def _map_reward(self, ta_rewards: dict, player_id: int) -> float:
@@ -117,7 +136,7 @@ class SnakeEnvironment(Environment):
 
     async def _run_opponent_turns(self, current_player_id: int, current_observation) -> str:
         while current_player_id != self.AGENT_PLAYER_ID:
-            obs_text = current_observation if isinstance(current_observation, str) else str(current_observation)
+            obs_text = self._format_observation(current_observation)
             opponent_action = await self._get_opponent_action(obs_text, current_player_id)
             done, info = self.ta_env.step(action=opponent_action)
             if done:
